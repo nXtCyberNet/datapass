@@ -1,0 +1,4 @@
+g4f 
+typing-extensions
+boto3
+
