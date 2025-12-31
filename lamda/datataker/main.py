@@ -1,91 +1,113 @@
 import json
 import boto3
 import os
-import requests  
+import requests
 from datetime import datetime
+import os 
 
+s3 = boto3.client("s3")
+sns = boto3.client("sns")
 
-s3 = boto3.client('s3')
-sns = boto3.client('sns')
+BUCKET_NAME = os.environ["BUCKET_NAME"]
+SNS_TOPIC_ARN = os.environ["SNS_TOPIC_ARN"]
 
-BUCKET_NAME = os.environ.get('BUCKET_NAME')
-SNS_TOPIC_ARN = os.environ.get('SNS_TOPIC_ARN')
-API_KEY = "pub_e574e1fb7b0a461e9fd28459353c7133"
-url = f"https://newsdata.io/api/1/latest\?apikey\={API_KEY}\&q\=india"
+API_KEY = os.environ["API_KEY"]
+URL = "https://newsdata.io/api/1/latest"
+
+params = {"apikey": API_KEY, "q": "india"}
+
 
 def handler(event, context):
-    
-    
-    
+    # 1️⃣ Fetch news
     try:
-        response = requests.get(url, timeout=5)
-        response.raise_for_status() 
-        response = {"id": response["article_id"],"title": response["title"],"description": response["description"],"url": response["link"],"image": response["image_url"],"source": response["source_name"],"date": response["pubDate"]
-}
-
-
-
-        
-        
-        record = {
-            "timestamp": datetime.now().isoformat(),
-            "source": "newsdata.io",
-            "data": response.json()
-        }
-        print("Data fetched successfully.")
+        response = requests.get(URL, params=params, timeout=10)
+        response.raise_for_status()
+        api_data = response.json()
     except requests.exceptions.RequestException as e:
-        print(f"Error fetching API data: {e}")
+        print("API Error:", e)
         return {"statusCode": 500, "body": "API Failure"}
 
-    
-    today_str = datetime.now().strftime('%Y-%m-%d')
-    file_key = f"raw_data/daily_log_{today_str}.json"
+    # 2️⃣ Extract FREE fields only
+    new_articles = []
+    for a in api_data.get("results", []):
+        new_articles.append({
+            "id": a.get("article_id"),
+            "title": a.get("title"),
+            "description": a.get("description"),
+            "link": a.get("link"),
+            "source": a.get("source_name"),
+            "date": a.get("pubDate")
+        })
 
-    
-    current_content = []
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    file_key = f"raw_data/daily_log_{today}.json"
+
+    # 3️⃣ Read existing S3 file
     try:
-        s3_response = s3.get_object(Bucket=BUCKET_NAME, Key=file_key)
-        file_content = s3_response['Body'].read().decode('utf-8')
-        current_content = json.loads(file_content)
+        obj = s3.get_object(Bucket=BUCKET_NAME, Key=file_key)
+        existing_data = json.loads(obj["Body"].read())
     except s3.exceptions.NoSuchKey:
-        print(f"No file found for {today_str}. Creating new file.")
-        current_content = []
+        existing_data = []
     except Exception as e:
-        print(f"S3 Read Error: {e}")
+        print("S3 Read Error:", e)
+        return {"statusCode": 500, "body": "S3 Read Failure"}
 
-   
-    current_content.append(record)
-    
+    # 4️⃣ Build existing article_id set
+    existing_ids = set()
+    for record in existing_data:
+        for art in record.get("articles", []):
+            existing_ids.add(art["id"])
+
+    # 5️⃣ Deduplicate
+    unique_articles = []
+    for art in new_articles:
+        if art["id"] not in existing_ids:
+            unique_articles.append(art)
+
+    if not unique_articles:
+        print("No new articles found.")
+        return {"statusCode": 200, "body": "No new data"}
+
+    # 6️⃣ Create record
+    record = {
+        "timestamp": datetime.utcnow().isoformat(),
+        "source": "newsdata.io",
+        "count": len(unique_articles),
+        "articles": unique_articles
+    }
+
+    existing_data.append(record)
+
+    # 7️⃣ Write back to S3
     try:
         s3.put_object(
             Bucket=BUCKET_NAME,
             Key=file_key,
-            Body=json.dumps(current_content, indent=2),
-            ContentType='application/json'
+            Body=json.dumps(existing_data, indent=2),
+            ContentType="application/json"
         )
     except Exception as e:
-        print(f"S3 Write Error: {e}")
+        print("S3 Write Error:", e)
         return {"statusCode": 500, "body": "S3 Write Failure"}
 
-    
-    message_payload = {
-        "status": "success",
-        "bucket": BUCKET_NAME,
-        "key": file_key,
-        "record_count": len(current_content),
-        "timestamp": datetime.now().isoformat()
-    }
-
+    # 8️⃣ SNS notification
     try:
         sns.publish(
             TopicArn=SNS_TOPIC_ARN,
-            Message=json.dumps(message_payload),
-            Subject=f"Pipeline Update: {today_str}"
+            Subject=f"Pipeline Update: {today}",
+            Message=json.dumps({
+                "status": "success",
+                "bucket": BUCKET_NAME,
+                "key": file_key,
+                "new_articles": len(unique_articles),
+                "total_records": len(existing_data),
+                "timestamp": datetime.utcnow().isoformat()
+            })
         )
     except Exception as e:
-        print(f"SNS Error: {e}")
+        print("SNS Error:", e)
 
     return {
-        "statusCode": 200, 
+        "statusCode": 200,
         "body": json.dumps("Success")
     }
