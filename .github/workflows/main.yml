@@ -1,0 +1,72 @@
+name: Deploy Docker Image to Lambda
+
+on:
+  push:
+    branches:
+      - main  # Trigger on push to main branch
+
+jobs:
+  deploy:
+    name: Build and Deploy to AWS Lambda
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Checkout the code
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # 2. Configure AWS Credentials
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      # 3. Login to Amazon ECR
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # 4. Build, Tag, and Push Image to ECR
+      - name: Build, tag, and push image to Amazon ECR
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY1: ${{ secrets.ECR_REPOSITORY1 }}
+          ECR_REPOSITORY2: ${{ secrets.ECR_REPOSITORY2 }}
+          
+          IMAGE_TAG: ${{ github.sha }} # Use Commit SHA for unique versioning
+        run: |
+          # Build the docker container
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY1:$IMAGE_TAG ./lamda/datataker
+      
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY1:$IMAGE_TAG
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY2:$IMAGE_TAG ./lamda/summery
+      
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY2:$IMAGE_TAG 
+          
+          echo "IMAGE_URI1=$ECR_REGISTRY/$ECR_REPOSITORY1:$IMAGE_TAG" >> $GITHUB_ENV
+          echo "IMAGE_URI2=$ECR_REGISTRY/$ECR_REPOSITORY2:$IMAGE_TAG" >> $GITHUB_ENV
+          
+
+      # 5. Update Lambda Function Code
+      - name: Update Lambda Function
+        run: |
+          aws lambda update-function-code \
+            --function-name ${{ secrets.LAMBDA_FUNCTION_NAME1 }} \
+            --image-uri $IMAGE_URI1
+          aws lambda update-function-code \
+            --function-name ${{ secrets.LAMBDA_FUNCTION_NAME2 }} \
+            --image-uri $IMAGE_URI2 
+            
+      # 6. Verify Update Status (Optional)
+      - name: Wait for Lambda Update to Complete
+        run: |
+          aws lambda wait function-updated \
+            --function-name ${{ secrets.LAMBDA_FUNCTION_NAME1 }}
+          echo "Lambda1 update complete!"
+          aws lambda wait function-updated \
+            --function-name ${{ secrets.LAMBDA_FUNCTION_NAME2 }}
+          echo "Lambda2 update complete!"
+
+          
