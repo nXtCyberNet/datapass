@@ -5,5 +5,5 @@ variable "region" {
 variable "image_tag" {
   description = "The docker image tag to deploy"
   type        = string
-  default     = "latest" # Fallback
+  default     = "latest"
 }

@@ -18,7 +18,7 @@ params = {"apikey": API_KEY, "q": "india"}
 
 
 def handler(event, context):
-    # 1️⃣ Fetch news
+    
     try:
         response = requests.get(URL, params=params, timeout=10)
         response.raise_for_status()
@@ -27,7 +27,7 @@ def handler(event, context):
         print("API Error:", e)
         return {"statusCode": 500, "body": "API Failure"}
 
-    # 2️⃣ Extract FREE fields only
+    
     new_articles = []
     for a in api_data.get("results", []):
         new_articles.append({
@@ -42,7 +42,7 @@ def handler(event, context):
     today = datetime.utcnow().strftime("%Y-%m-%d")
     file_key = f"raw_data/daily_log_{today}.json"
 
-    # 3️⃣ Read existing S3 file
+    
     try:
         obj = s3.get_object(Bucket=BUCKET_NAME, Key=file_key)
         existing_data = json.loads(obj["Body"].read())
@@ -52,13 +52,13 @@ def handler(event, context):
         print("S3 Read Error:", e)
         return {"statusCode": 500, "body": "S3 Read Failure"}
 
-    # 4️⃣ Build existing article_id set
+    
     existing_ids = set()
     for record in existing_data:
         for art in record.get("articles", []):
             existing_ids.add(art["id"])
 
-    # 5️⃣ Deduplicate
+    
     unique_articles = []
     for art in new_articles:
         if art["id"] not in existing_ids:
@@ -68,7 +68,7 @@ def handler(event, context):
         print("No new articles found.")
         return {"statusCode": 200, "body": "No new data"}
 
-    # 6️⃣ Create record
+    
     record = {
         "timestamp": datetime.utcnow().isoformat(),
         "source": "newsdata.io",
@@ -78,7 +78,7 @@ def handler(event, context):
 
     existing_data.append(record)
 
-    # 7️⃣ Write back to S3
+    
     try:
         s3.put_object(
             Bucket=BUCKET_NAME,
@@ -90,7 +90,7 @@ def handler(event, context):
         print("S3 Write Error:", e)
         return {"statusCode": 500, "body": "S3 Write Failure"}
 
-    # 8️⃣ SNS notification
+    
     try:
         sns.publish(
             TopicArn=SNS_TOPIC_ARN,
